@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Quiz Game: คำถามความปลอดภัย (PDF)</title>
+    <title>Quiz Game: คำถามความปลอดภัย</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
@@ -214,11 +214,12 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
-        .user-id-display {
+        .user-id-display { /* Keep for potential future use if userId is regenerated client-side */
             font-size: 0.8rem;
             color: #ccc;
             margin-top: 10px;
             word-break: break-all; /* Allow long IDs to wrap */
+            display: none; /* Hide by default as no external userId is used */
         }
         .timer-bar-container {
             width: 100%;
@@ -245,9 +246,9 @@
     </style>
 </head>
 <body>
-    <div class="loading-overlay" id="loading-overlay">
+    <div class="loading-overlay" id="loading-overlay" style="display: none;">
         <div class="spinner"></div>
-        กำลังโหลดข้อมูลผู้ใช้...
+        กำลังโหลดข้อมูล...
     </div>
 
     <div class="quiz-container">
@@ -277,7 +278,7 @@
             <p class="text-gray-700 text-lg mb-4" id="result-message"></p>
             <button class="restart-button" id="restart-button-final">เล่นอีกครั้ง</button>
         </div>
-        <div class="user-id-display" id="user-id-display"></div>
+        <!-- Removed user-id-display as it's not relevant without Firebase Auth -->
     </div>
 
     <div id="message-box" class="message-box">
@@ -285,1026 +286,893 @@
         <button onclick="hideMessage()">ตกลง</button>
     </div>
 
-    <!-- Firebase SDKs -->
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // ห่อโค้ด JavaScript ทั้งหมดด้วย IIFE เพื่อสร้างขอบเขตส่วนตัวและป้องกันข้อผิดพลาดการประกาศซ้ำ
+        (function() {
+            let currentQuestions = []; // Questions for the current round (10 questions)
+            let currentQuestionIndex = 0;
+            let score = 0;
+            const totalQuestionsPerRound = 10; // 10 questions per round
 
-        // Global variables provided by Canvas environment
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            let highestScore = 0; // Highest score for the current browser session
 
-        // *** สำคัญมาก: ถ้าคุณรันโค้ดนี้บน LINE LIFF หรือโฮสต์เอง คุณต้องใส่ Firebase Config ของคุณที่นี่ ***
-        // *** คุณสามารถหา Firebase Config ได้จาก Firebase Console -> Project settings -> Your apps -> Web app ***
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
-            // ตัวอย่าง: ใส่ข้อมูลของโปรเจกต์ Firebase ของคุณที่นี่
-            apiKey: "YOUR_API_KEY",
-            authDomain: "YOUR_AUTH_DOMAIN",
-            projectId: "YOUR_PROJECT_ID", // ต้องมีค่านี้!
-            storageBucket: "YOUR_STORAGE_BUCKET",
-            messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-            appId: "YOUR_APP_ID"
-        };
-        // *** สิ้นสุดส่วน Firebase Config ***
+            const timePerQuestion = 30; // seconds
+            let timer;
+            let timeLeft;
+            let quizEndedByTimeOut = false; // Flag to check if quiz ended due to timeout
 
-        // initialAuthToken จะถูกใช้ในสภาพแวดล้อม Canvas เพื่อยืนยันตัวตน
-        // หากอยู่นอก Canvas จะเป็น null และจะลงชื่อเข้าใช้แบบไม่ระบุชื่อ (signInAnonymously)
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null; 
-
-        let app, db, auth;
-        let userId = 'anonymous'; // Default to anonymous
-        let isAuthReady = false;
-
-        // Hardcoded questions generated from PDFs
-        const allQuizQuestions = [
-  {
-    "question": "วัตถุประสงค์หลักของเอกสาร 'Chemical Classification and Storage' คืออะไร?",
-    "answers": [
-      {
-        "text": "เพื่อเป็นแนวทางในการจำแนกประเภทและจัดเก็บสารเคมีและวัตถุอันตรายได้อย่างถูกต้องและปลอดภัย",
-        "correct": true
-      },
-      {
-        "text": "เพื่อกำหนดระเบียบปฏิบัติงานมาตรฐานในการควบคุมการสั่งซื้อและเคลื่อนย้ายสารเคมี",
-        "correct": false
-      },
-      {
-        "text": "เพื่อป้องกันมลพิษและอันตรายที่เกิดจากการใช้สารเคมีภายในบริษัท",
-        "correct": false
-      },
-      {
-        "text": "เพื่อจัดการด้านความปลอดภัยและทบทวนแผนป้องกันอันตรายจากรังสี",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตามเอกสาร 'Chemical Classification and Storage' ใครมีหน้าที่ต้องปฏิบัติตามระเบียบปฏิบัติการนี้อย่างเคร่งครัด?",
-    "answers": [
-      {
-        "text": "พนักงานทุกคน",
-        "correct": true
-      },
-      {
-        "text": "แผนกความปลอดภัยและสิ่งแวดล้อม",
-        "correct": false
-      },
-      {
-        "text": "ผู้บริหารระดับสูงของโรงงาน",
-        "correct": false
-      },
-      {
-        "text": "ผู้จัดการแผนก และหัวหน้าแผนก",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "สารเคมีที่เกี่ยวข้องกับการผลิตทางอ้อม (Indirect Production Chemicals) หมายถึงอะไรในเอกสาร 'Chemical Classification and Storage'?",
-    "answers": [
-      {
-        "text": "สารเคมีที่ใช้เพื่อวัตถุประสงค์อื่นๆ เช่น งานสำนักงาน งานสวน สารเคมีที่ใช้ในห้องพยาบาล/โรงอาหาร",
-        "correct": false
-      },
-      {
-        "text": "สารเคมีที่ใช้ในการซ่อมบำรุง งานเกี่ยวกับเครื่องจักร เช่น การทำความสะอาด ปรับปรุงเครื่องจักร และใช้ในระบบบำบัดน้ำเสีย",
-        "correct": true
-      },
-      {
-        "text": "สารเคมีที่เกี่ยวข้องกับการผลิตทางตรง เช่น วัตถุดิบ ส่วนประกอบ",
-        "correct": false
-      },
-      {
-        "text": "สารเคมีที่ใช้ในงานก่อสร้าง งานรื้อถอน หรืองานซ่อมแซมสิ่งปลูกสร้าง",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตามเอกสาร 'Chemical Classification and Storage' การจำแนกประเภทสารเคมีเพื่อการจัดเก็บแบ่งออกเป็นกี่ประเภท?",
-    "answers": [
-      {
-        "text": "2 ประเภท",
-        "correct": true
-      },
-      {
+            // Hardcoded questions generated from PDFs
+            const allQuizQuestions = [
+    {
+        "question": "วัตถุประสงค์หลักของเอกสาร 'Chemical Classification and Storage' คืออะไร?",
+        "answers": [
+        {
+            "text": "เพื่อเป็นแนวทางในการจำแนกประเภทและจัดเก็บสารเคมีและวัตถุอันตรายได้อย่างถูกต้องและปลอดภัย",
+            "correct": true
+        },
+        {
+            "text": "เพื่อกำหนดระเบียบปฏิบัติงานมาตรฐานในการควบคุมการสั่งซื้อและเคลื่อนย้ายสารเคมี",
+            "correct": false
+        },
+        {
+            "text": "เพื่อป้องกันมลพิษและอันตรายที่เกิดจากการใช้สารเคมีภายในบริษัท",
+            "correct": false
+        },
+        {
+            "text": "เพื่อจัดการด้านความปลอดภัยและทบทวนแผนป้องกันอันตรายจากรังสี",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตามเอกสาร 'Chemical Classification and Storage' ใครมีหน้าที่ต้องปฏิบัติตามระเบียบปฏิบัติการนี้อย่างเคร่งครัด?",
+        "answers": [
+        {
+            "text": "พนักงานทุกคน",
+            "correct": true
+        },
+        {
+            "text": "แผนกความปลอดภัยและสิ่งแวดล้อม",
+            "correct": false
+        },
+        {
+            "text": "ผู้บริหารระดับสูงของโรงงาน",
+            "correct": false
+        },
+        {
+            "text": "ผู้จัดการแผนก และหัวหน้าแผนก",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "สารเคมีที่เกี่ยวข้องกับการผลิตทางอ้อม (Indirect Production Chemicals) หมายถึงอะไรในเอกสาร 'Chemical Classification and Storage'?",
+        "answers": [
+        {
+            "text": "สารเคมีที่ใช้เพื่อวัตถุประสงค์อื่นๆ เช่น งานสำนักงาน งานสวน สารเคมีที่ใช้ในห้องพยาบาล/โรงอาหาร",
+            "correct": false
+        },
+        {
+            "text": "สารเคมีที่ใช้ในการซ่อมบำรุง งานเกี่ยวกับเครื่องจักร เช่น การทำความสะอาด ปรับปรุงเครื่องจักร และใช้ในระบบบำบัดน้ำเสีย",
+            "correct": true
+        },
+        {
+            "text": "สารเคมีที่เกี่ยวข้องกับการผลิตทางตรง เช่น วัตถุดิบ ส่วนประกอบ",
+            "correct": false
+        },
+        {
+            "text": "สารเคมีที่ใช้ในงานก่อสร้าง งานรื้อถอน หรืองานซ่อมแซมสิ่งปลูกสร้าง",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตามเอกสาร 'Chemical Classification and Storage' การจำแนกประเภทสารเคมีเพื่อการจัดเก็บแบ่งออกเป็นกี่ประเภท?",
+        "answers": [
+        {
+            "text": "2 ประเภท",
+            "correct": true
+        },
+        {
         "text": "3 ประเภท",
-        "correct": false
-      },
-      {
-        "text": "4 ประเภท",
-        "correct": false
-      },
-      {
-        "text": "5 ประเภท",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ในกรณีที่สารเคมีไม่เข้าข่ายความรับผิดชอบของกรมโรงงานอุตสาหกรรม ต้องจัดเก็บตามคู่มือใด?",
-    "answers": [
-      {
-        "text": "คู่มือการเก็บรักษาสารเคมีและวัตถุอันตราย พ.ศ. 2550",
-        "correct": true
-      },
-      {
-        "text": "ประกาศกระทรวงอุตสาหกรรม เรื่อง บัญชีรายชื่อวัตถุอันตราย",
-        "correct": false
-      },
-      {
-        "text": "ข้อมูลจาก SDS หัวข้อ 14 ข้อมูลการขนส่ง",
-        "correct": false
-      },
-      {
-        "text": "คู่มือการขนส่งวัตถุอันตราย กรมควบคุมพิษ",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "หากเอกสารข้อมูลความปลอดภัยของสารเคมี (SDS) ไม่ระบุข้อมูลการจัดเก็บชัดเจน ควรตรวจสอบข้อมูลเพิ่มเติมจากหัวข้อใด?",
-    "answers": [
-      {
-        "text": "หัวข้อ 14: ข้อมูลการขนส่ง",
-        "correct": true
-      },
-      {
-        "text": "หัวข้อ 9: คุณสมบัติทางกายภาพและเคมี",
-        "correct": false
-      },
-      {
-        "text": "หัวข้อ 6.1.1.1 การจำแนกประเภทสารเคมี",
-        "correct": false
-      },
-      {
-        "text": "หัวข้อ 6.1.2.2 UN number",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตามเอกสาร 'Chemical Classification and Storage' การพิจารณาจัดเก็บตาม UN class ต้องนำข้อมูลใน SDS ข้อใดมาพิจารณาร่วมด้วย?",
-    "answers": [
-      {
-        "text": "ข้อ 9 คุณสมบัติทางกายภาพและเคมี",
-        "correct": true
-      },
-      {
-        "text": "ข้อ 14 ข้อมูลการขนส่ง",
-        "correct": false
-      },
-      {
-        "text": "ข้อ 4 คำนิยาม",
-        "correct": false
-      },
-      {
-        "text": "ข้อ 7.1.1.1 การจัดเก็บตามกฎหมาย",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "สารไพโรโฟริก (Pyrophoric substances) จัดอยู่ในประเภทใดตามตารางการจำแนกประเภทสารเคมี/วัตถุอันตราย?",
-    "answers": [
-      {
-        "text": "สารที่มีความเสี่ยงต่อการลุกไหม้ได้เอง (4.2)",
-        "correct": true
-      },
-      {
-        "text": "ของแข็งไวไฟ (4.1B)",
-        "correct": false
-      },
-      {
-        "text": "ของเหลวไวไฟ (3A)",
-        "correct": false
-      },
-      {
-        "text": "สารออกซิไดส์ (5.1A)",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "หากเกิดการรั่วไหลของสารเคมีและของเสียอันตรายไม่รุนแรง (ปริมาณน้อยกว่า 4 ลิตร หรือ 45 กิโลกรัมสำหรับ Hazardous Waste) ขั้นตอนแรกที่ต้องทำคืออะไร?",
-    "answers": [
-      {
-        "text": "แจ้งหัวหน้างาน",
-        "correct": true
-      },
-      {
-        "text": "ประสานงานหน่วยงานภายนอก",
-        "correct": false
-      },
-      {
-        "text": "กรอกแบบฟอร์ม Emergency Response Spill Permit",
-        "correct": false
-      },
-      {
-        "text": "ประกาศยกเลิกแผนฉุกเฉิน",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "วัตถุประสงค์ของระเบียบปฏิบัติงาน '5 Steps to Safety and SWIM Program' คืออะไร?",
-    "answers": [
-      {
-        "text": "เพื่อเป็นแนวทางการดำเนินการตามกระบวนการ 5 ขั้นตอนเพื่อความปลอดภัย และปฏิบัติตามหลัก SWIM เพื่อเพิ่มประสิทธิภาพในการตัดสินใจของพนักงาน",
-        "correct": true
-      },
-      {
-        "text": "เพื่อกำหนดมาตรการป้องกันอันตรายส่วนบุคคลในพื้นที่ปฏิบัติงาน",
-        "correct": false
-      },
-      {
-        "text": "เพื่อควบคุมกระบวนการขนถ่าย จัดเก็บ และนำสารเคมีไปใช้ให้ถูกต้อง",
-        "correct": false
-      },
-      {
-        "text": "เพื่อป้องกันการแพร่กระจายของรังสีไอออนจากการใช้งานวัตถุรังสี",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "หลักการ SWIM ย่อมาจากอะไร?",
-    "answers": [
-      {
-        "text": "Stop, Warn, Inform, Manage",
-        "correct": true
-      },
-      {
-        "text": "Safety, Warning, Incident, Management",
-        "correct": false
-      },
-      {
-        "text": "Secure, Watch, Investigate, Maintain",
-        "correct": false
-      },
-      {
-        "text": "Survey, Warn, Identify, Monitor",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตาม '5 Steps to Safety and SWIM Program' หากพนักงานตอบว่า “ไม่” ในขั้นตอนใดขั้นตอนหนึ่งของ 5 Steps to Safety ควรทำอย่างไร?",
-    "answers": [
-      {
-        "text": "ต้องหยุดงานทันทีและปฏิบัติตามหลัก SWIM",
-        "correct": true
-      },
-      {
-        "text": "แจ้งหัวหน้างานและดำเนินการต่อ",
-        "correct": false
-      },
-      {
-        "text": "ประเมินสถานการณ์ด้วยตนเองและแก้ไข",
-        "correct": false
-      },
-      {
-        "text": "รอการตรวจสอบประจำสัปดาห์จาก Safety captain",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ในกรณีที่พบเหตุการณ์สารเคมีรั่วไหลรุนแรงและไม่สามารถระงับเหตุขั้นต้นได้ ผู้อำนวยการฉุกเฉินจะสั่งการอย่างไร?",
-    "answers": [
-      {
-        "text": "สั่งใช้แผนตอบโต้สถานการณ์สารเคมีรั่วไหลรุนแรง",
-        "correct": true
-      },
-      {
-        "text": "กรอกแบบฟอร์ม FOPI--EHS--001-00 Mishap Report",
-        "correct": false
-      },
-      {
-        "text": "แจ้ง MCM/ประธาน",
-        "correct": false
-      },
-      {
-        "text": "ประสานงานแจ้ง บ.PV",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ข้อใดต่อไปนี้ไม่ใช่คุณสมบัติที่ถูกต้องของ 'Hazardous materials' (วัตถุอันตราย) ตามเอกสาร 'Chemical Classification and Storage'?",
-    "answers": [
-      {
-        "text": "วัตถุอันตรายตามประกาศกระทรวงอุตสาหกรรม เรื่อง บัญชีรายชื่อวัตถุอันตราย",
-        "correct": false
-      },
-      {
-        "text": "สารเคมีที่ใช้เพื่อวัตถุประสงค์อื่นๆ เช่น งานสำนักงาน",
-        "correct": true
-      },
-      {
-        "text": "มีการจำแนกตามข้อกำหนดการขนส่งวัตถุอันตรายของสหประชาชาติ",
-        "correct": false
-      },
-      {
-        "text": "มีเลขรหัสประจำตัว 4 หลักที่กำหนดใน UN Model Regulations",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตามเอกสาร 'Radiation Ionizing' วัตถุประสงค์หลักของขั้นตอนปฏิบัตินี้คืออะไร?",
-    "answers": [
-      {
-        "text": "เพื่อป้องกันการแพร่กระจายของรังสีไอออน ซึ่งเป็นผลมาจากกิจกรรมการใช้งานวัตถุรังสี (Kr-85)",
-        "correct": true
-      },
-      {
-        "text": "เพื่อกำหนดแนวทางการจัดการและการขนส่งวัตถุอันตรายทางบก",
-        "correct": false
-      },
-      {
-        "text": "เพื่อระบุและประเมินอันตรายของสารเคมีที่ใช้ในโรงงาน",
-        "correct": false
-      },
-      {
-        "text": "เพื่อกำหนดมาตรการความปลอดภัยสำหรับเครื่องจักรที่ใช้ในกระบวนการผลิต",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ใครมีหน้าที่ 'บริหารจัดการด้านความปลอดภัย ทบทวนแผน มาตรการป้องกันอันตรายจากรังสี และแนะนำผู้บริหารและผู้ปฏิบัติงานเกี่ยวกับการใช้สารกัมมันตรังสี' ตามเอกสาร 'Radiation Ionizing'?",
-    "answers": [
-      {
-        "text": "เจ้าหน้าที่ความปลอดภัยทางรังสี (RSO)",
-        "correct": true
-      },
-      {
-        "text": "ผู้บริหารระดับสูงสุดของโรงงาน",
-        "correct": false
-      },
-      {
-        "text": "ผู้จัดการแผนก และหัวหน้าแผนก",
-        "correct": false
-      },
-      {
-        "text": "พนักงาน DSST ทุกคน",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตามเอกสาร 'การป้องกันอันตรายจากวัสดุกัมมันตรังสี' วัสดุกัมมันตรังสีที่ใช้ภายในบริษัทได้รับการอนุญาตจากหน่วยงานใด?",
-    "answers": [
-      {
-        "text": "สำนักงานปรมาณูเพื่อสันติ",
-        "correct": true
-      },
-      {
-        "text": "กรมโรงงานอุตสาหกรรม",
-        "correct": false
-      },
-      {
-        "text": "กระทรวงกลาโหม",
-        "correct": false
-      },
-      {
-        "text": "กรมสวัสดิการและคุ้มครองแรงงาน",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ผู้ปฏิบัติงานเกี่ยวกับวัสดุกัมมันตรังสีต้องสวมใส่อุปกรณ์ป้องกันใดและพกพาอะไรตลอดเวลาที่ปฏิบัติงานในพื้นที่ที่กำหนด?",
-    "answers": [
-      {
-        "text": "ต้องสวมใส่ PPE ตามกำหนดและต้องคิดเครื่องบันทึกรังสี (OSL) อยู่ตลอดเวลา",
-        "correct": true
-      },
-      {
-        "text": "ต้องสวมหมวกนิรภัยแบบแข็งและแว่นตาป้องกัน",
-        "correct": false
-      },
-      {
-        "text": "ต้องสวมชุดยูนิฟอร์มที่ทำจากคอตตอนและรองเท้านิรภัย",
-        "correct": false
-      },
-      {
-        "text": "ต้องสวมถุงมือไนไตรชนิดหนาและเสื้อคลุมกันรังสี",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตาม 'Safety Common Rules' กฎพื้นฐานข้อแรกคืออะไร?",
-    "answers": [
-      {
-        "text": "เดิน อย่าวิ่ง",
-        "correct": true
-      },
-      {
-        "text": "ห้ามพนักงานหยอกล้อเล่นกันระหว่างทำงาน",
-        "correct": false
-      },
-      {
-        "text": "ห้ามพนักงานเดินล้วงกระเป๋าในพื้นที่กระบวนการผลิต",
-        "correct": false
-      },
-      {
-        "text": "ไม่อนุญาตให้บุคคลอายุต่ำกว่า 15 ปีเข้ามาในโรงงาน",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "หากพบสิ่งผิดปกติในที่ทำงาน ควรปฏิบัติตามหลักการใดตาม 'Safety Common Rules'?",
-    "answers": [
-      {
-        "text": "ใช้หลัก SWIM",
-        "correct": true
-      },
-      {
-        "text": "รายงานผู้บังคับบัญชาทันที",
-        "correct": false
-      },
-      {
-        "text": "ตรวจสอบสภาพสายไฟและอุปกรณ์",
-        "correct": false
-      },
-      {
-        "text": "ห้ามทำงานถ้ามองไม่เห็น",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตาม 'Safety Common Rules' พนักงาน 1 คนได้รับอนุญาตให้ยก ลาก ผลัก ดัน แบก หาม วัตถุหรือสิ่งของด้วยมือเปล่าได้ไม่เกินกี่กิโลกรัม?",
-    "answers": [
-      {
-        "text": "20 กิโลกรัม",
-        "correct": true
-      },
-      {
-        "text": "10 กิโลกรัม (สำหรับพนักงานตั้งครรภ์)",
-        "correct": false
-      },
-      {
-        "text": "45 กิโลกรัม",
-        "correct": false
-      },
-      {
-        "text": "500 กิโลกรัม",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตาม 'Safety Common Rules' วัตถุระเบิดไม่ควรเก็บสัมผัสกับแสงอาทิตย์เพราะเหตุใด?",
-    "answers": [
-      {
-        "text": "ทำให้เสื่อมคุณภาพเร็วขึ้นและอาจทำให้บางจุดมีอุณหภูมิสูงขึ้นและลุกติดไฟได้",
-        "correct": true
-      },
-      {
-        "text": "เพื่อป้องกันการสื่อสารที่ผิดพลาด",
-        "correct": false
-      },
-      {
-        "text": "เพื่อป้องกันไฟฟ้าสถิตย์",
-        "correct": false
-      },
-      {
-        "text": "เนื่องจากวัตถุระเบิดสามารถเกิดการจุดระเบิดด้วยไฟฟ้าสถิตย์",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตาม 'Sock Filter Waste Transportation' ใครมีหน้าที่รับผิดชอบในการรัดภาชนะบรรจุของเสียให้แน่นหนาและขนส่งของเสียอย่างปลอดภัย?",
-    "answers": [
-      {
-        "text": "บริษัทรับกำจัด/บำบัด (Progesser company)",
-        "correct": true
-      },
-      {
-        "text": "เจ้าหน้าที่สิ่งแวดล้อม",
-        "correct": false
-      },
-      {
-        "text": "ผู้ปฏิบัติงานขับรถโฟล์คลิฟท์",
-        "correct": false
-      },
-      {
-        "text": "DSST-SB",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตามเอกสาร 'Sock Filter Waste Transportation' ผู้ปฏิบัติงานขับรถโฟล์คลิฟท์ต้องสวมใส่อุปกรณ์ป้องกันอันตรายส่วนบุคคลใดบ้าง?",
-    "answers": [
-      {
-        "text": "แว่นตาป้องกัน (Safety glass), หมวกนิรภัยแบบแข็ง (Helmet), รองเท้านิรภัย (Safety shoes)",
-        "correct": true
-      },
-      {
-        "text": "แว่นตาป้องกัน (Safety glass) เท่านั้น",
-        "correct": false
-      },
-      {
-        "text": "หมวกนิรภัยแบบแข็ง (Helmet) เท่านั้น",
-        "correct": false
-      },
-      {
-        "text": "รองเท้านิรภัย (Safety shoes) เท่านั้น",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "เหตุผลหลักในการใช้หลัก 5 Steps to Safety และ SWIM program คืออะไร?",
-    "answers": [
-      {
-        "text": "เพื่อเพิ่มประสิทธิภาพในการตัดสินใจและป้องกันอุบัติเหตุในสถานการณ์ที่ไม่ปกติ",
-        "correct": true
-      },
-      {
-        "text": "เพื่อควบคุมการจัดซื้อและจัดเก็บสารเคมีให้เป็นไปตามกฎหมาย",
-        "correct": false
-      },
-      {
-        "text": "เพื่อตรวจสอบการรั่วไหลของสารกัมมันตรังสี",
-        "correct": false
-      },
-      {
-        "text": "เพื่อจัดทำรายงานอุบัติเหตุและเหตุการณ์เกือบเกิดอุบัติเหตุ",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ในกรณีเกิดเพลิงไหม้จากสารเคมี ควรปฏิบัติตามแนวทางใดตามที่ระบุในเอกสาร 'Chemical Control'?",
-    "answers": [
-      {
-        "text": "ปฏิบัติตามระเบียบปฏิบัติแผนจัดการตอบโต้เหตุฉุกเฉิน (OPI-I08-EHS-008)",
-        "correct": true
-      },
-      {
-        "text": "ทำความสะอาดพื้นที่โดยทันที",
-        "correct": false
-      },
-      {
-        "text": "แจ้งหัวหน้างานและดำเนินการต่อ",
-        "correct": false
-      },
-      {
-        "text": "อพยพออกจากพื้นที่โดยทันที",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "สารกัมมันตรังสีใดที่ใช้ในการตรวจสอบหารอยรั่วจากการเชื่อมของชิ้นงาน (Leakage test) ตามข้อมูลในเอกสาร 'การป้องกันอันตรายจากวัสดุกัมมันตรังสี'?",
-    "answers": [
-      {
-        "text": "Krypton-85 (Unsealed source)",
-        "correct": true
-      },
-      {
-        "text": "Cesium-137",
-        "correct": false
-      },
-      {
-        "text": "Krypton-85 (Sealed source)",
-        "correct": false
-      },
-      {
-        "text": "ZPP Powder",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตาม 'Safety Common Rules' ผู้ขับขี่รถจักรยานยนต์และผู้โดยสารต้องสวมหมวกนิรภัยและทำอะไรเพิ่มเติม?",
-    "answers": [
-      {
-        "text": "สวมหมวกนิรภัย (หมวกกันน็อค) พร้อมรัดคางให้แน่นกระชับ",
-        "correct": true
-      },
-      {
-        "text": "คาดเข็มขัดนิรภัย",
-        "correct": false
-      },
-      {
-        "text": "ขับรถไม่เกิน 10 กิโลเมตรต่อชั่วโมง",
-        "correct": false
-      },
-      {
-        "text": "ให้สัญญาณไฟล่วงหน้าอย่างน้อย 10 เมตร",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "วัตถุประสงค์ของการจัดการการเปลี่ยนแปลง (Management of Change - MOC) ตามเอกสาร 'Chemical Control' คืออะไร?",
-    "answers": [
-      {
-        "text": "เพื่อให้แน่ใจว่าการเปลี่ยนแปลงใดๆ ในกระบวนการ, การทดลอง, วัตถุดิบ, ขั้นตอนการปฏิบัติงาน, สารเคมี, เทคโนโลยี, อุปกรณ์และอาคารสถานที่มีการบันทึกตาม OPI-I08-EHS-011",
-        "correct": true
-      },
-      {
-        "text": "เพื่อกำหนดระเบียบปฏิบัติงานมาตรฐานในการควบคุมการสั่งซื้อสารเคมี",
-        "correct": false
-      },
-      {
-        "text": "เพื่อป้องกันการแพร่กระจายของรังสีไอออนจากการใช้งานวัตถุรังสี",
-        "correct": false
-      },
-      {
-        "text": "เพื่อประเมินความปลอดภัยของสารเคมีก่อนที่จะทำการสั่งซื้อ",
-        "correct": false
-      }
-    ]
-  },
-  {
-    "question": "ตาม 'Safety Common Rules' กรณีมีการเคลื่อนย้ายวัตถุที่มีพลังงานสูง พนักงานที่กำลังถือวัตถุนั้นจะต้องตะโกนคำว่าอะไรเพื่อเตือนผู้อื่นและเคลียร์เส้นทาง?",
-    "answers": [
-      {
-        "text": "พาวเดอร์",
-        "correct": true
-      },
-      {
-        "text": "อันตราย",
-        "correct": false
-      },
-      {
-        "text": "ระเบิด",
-        "correct": false
-      },
-      {
-        "text": "ระวัง",
-        "correct": false
-      }
-    ]
-  }
-];
-        let currentQuestions = []; // Questions for the current round (10 questions)
-        let currentQuestionIndex = 0;
-        let score = 0;
-        const totalQuestionsPerRound = 10; // 10 questions per round
-
-        let highestScore = 0;
-        // Removed playCount and maxPlays as per user request for unlimited plays
-
-        const timePerQuestion = 30; // seconds (changed from 20 to 30)
-        let timer;
-        let timeLeft;
-        let quizEndedByTimeOut = false; // Flag to check if quiz ended due to timeout
-
-        // UI Elements
-        const startScreen = document.getElementById('start-screen'); // New start screen element
-        const questionTextElement = document.getElementById('question-text');
-        const answerButtonsElement = document.getElementById('answer-buttons');
-        const scoreDisplayElement = document.getElementById('score-display');
-        const feedbackElement = document.getElementById('feedback');
-        const startGameButton = document.getElementById('start-game-button'); // Renamed from startButton
-        const restartButtonFinal = document.getElementById('restart-button-final');
-        // Removed quizArea as per refactored HTML structure
-        const gameActiveArea = document.getElementById('game-active-area');
-        const resultArea = document.getElementById('result-area');
-        const finalScoreElement = document.getElementById('final-score');
-        const resultMessageElement = document.getElementById('result-message');
-        const questionNumberElement = document.getElementById('question-number');
-        const messageBox = document.getElementById('message-box');
-        const messageText = document.getElementById('message-text');
-        const loadingOverlay = document.getElementById('loading-overlay');
-        const highScoreDisplay = document.getElementById('high-score-display');
-        // Removed playCountDisplay as per user request for unlimited plays
-        const userIdDisplay = document.getElementById('user-id-display');
-        const timerBar = document.getElementById('timer-bar');
-        const timerTextElement = document.getElementById('timer-text');
-
-        // Function to show a custom message box
-        function showMessage(msg) {
-            messageText.textContent = msg;
-            messageBox.style.display = 'block';
+            "correct": false
+        },
+        {
+            "text": "4 ประเภท",
+            "correct": false
+        },
+        {
+            "text": "5 ประเภท",
+            "correct": false
         }
-
-        // Function to hide the custom message box
-        window.hideMessage = function() { // Made global for onclick
-            messageBox.style.display = 'none';
+        ]
+    },
+    {
+        "question": "ในกรณีที่สารเคมีไม่เข้าข่ายความรับผิดชอบของกรมโรงงานอุตสาหกรรม ต้องจัดเก็บตามคู่มือใด?",
+        "answers": [
+        {
+            "text": "คู่มือการเก็บรักษาสารเคมีและวัตถุอันตราย พ.ศ. 2550",
+            "correct": true
+        },
+        {
+            "text": "ประกาศกระทรวงอุตสาหกรรม เรื่อง บัญชีรายชื่อวัตถุอันตราย",
+            "correct": false
+        },
+        {
+            "text": "ข้อมูลจาก SDS หัวข้อ 14 ข้อมูลการขนส่ง",
+            "correct": false
+        },
+        {
+            "text": "คู่มือการขนส่งวัตถุอันตราย กรมควบคุมพิษ",
+            "correct": false
         }
-
-        // Show loading overlay
-        function showLoading(text = 'กำลังโหลดข้อมูล...') {
-            loadingOverlay.querySelector('div').textContent = text;
-            loadingOverlay.style.display = 'flex';
+        ]
+    },
+    {
+        "question": "หากเอกสารข้อมูลความปลอดภัยของสารเคมี (SDS) ไม่ระบุข้อมูลการจัดเก็บชัดเจน ควรตรวจสอบข้อมูลเพิ่มเติมจากหัวข้อใด?",
+        "answers": [
+        {
+            "text": "หัวข้อ 14: ข้อมูลการขนส่ง",
+            "correct": true
+        },
+        {
+            "text": "หัวข้อ 9: คุณสมบัติทางกายภาพและเคมี",
+            "correct": false
+        },
+        {
+            "text": "หัวข้อ 6.1.1.1 การจำแนกประเภทสารเคมี",
+            "correct": false
+        },
+        {
+            "text": "หัวข้อ 6.1.2.2 UN number",
+            "correct": false
         }
-
-        // Hide loading overlay
-        function hideLoading() {
-            loadingOverlay.style.display = 'none';
+        ]
+    },
+    {
+        "question": "ตามเอกสาร 'Chemical Classification and Storage' การพิจารณาจัดเก็บตาม UN class ต้องนำข้อมูลใน SDS ข้อใดมาพิจารณาร่วมด้วย?",
+        "answers": [
+        {
+            "text": "ข้อ 9 คุณสมบัติทางกายภาพและเคมี",
+            "correct": true
+        },
+        {
+            "text": "ข้อ 14 ข้อมูลการขนส่ง",
+            "correct": false
+        },
+        {
+            "text": "ข้อ 4 คำนิยาม",
+            "correct": false
+        },
+        {
+            "text": "ข้อ 7.1.1.1 การจัดเก็บตามกฎหมาย",
+            "correct": false
         }
+        ]
+    },
+    {
+        "question": "สารไพโรโฟริก (Pyrophoric substances) จัดอยู่ในประเภทใดตามตารางการจำแนกประเภทสารเคมี/วัตถุอันตราย?",
+        "answers": [
+        {
+            "text": "สารที่มีความเสี่ยงต่อการลุกไหม้ได้เอง (4.2)",
+            "correct": true
+        },
+        {
+            "text": "ของแข็งไวไฟ (4.1B)",
+            "correct": false
+        },
+        {
+            "text": "ของเหลวไวไฟ (3A)",
+            "correct": false
+        },
+        {
+            "text": "สารออกซิไดส์ (5.1A)",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "หากเกิดการรั่วไหลของสารเคมีและของเสียอันตรายไม่รุนแรง (ปริมาณน้อยกว่า 4 ลิตร หรือ 45 กิโลกรัมสำหรับ Hazardous Waste) ขั้นตอนแรกที่ต้องทำคืออะไร?",
+        "answers": [
+        {
+            "text": "แจ้งหัวหน้างาน",
+            "correct": true
+        },
+        {
+            "text": "ประสานงานหน่วยงานภายนอก",
+            "correct": false
+        },
+        {
+            "text": "กรอกแบบฟอร์ม Emergency Response Spill Permit",
+            "correct": false
+        },
+        {
+            "text": "ประกาศยกเลิกแผนฉุกเฉิน",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "วัตถุประสงค์ของระเบียบปฏิบัติงาน '5 Steps to Safety and SWIM Program' คืออะไร?",
+        "answers": [
+        {
+            "text": "เพื่อเป็นแนวทางการดำเนินการตามกระบวนการ 5 ขั้นตอนเพื่อความปลอดภัย และปฏิบัติตามหลัก SWIM เพื่อเพิ่มประสิทธิภาพในการตัดสินใจของพนักงาน",
+            "correct": true
+        },
+        {
+            "text": "เพื่อกำหนดมาตรการป้องกันอันตรายส่วนบุคคลในพื้นที่ปฏิบัติงาน",
+            "correct": false
+        },
+        {
+            "text": "เพื่อควบคุมกระบวนการขนถ่าย จัดเก็บ และนำสารเคมีไปใช้ให้ถูกต้อง",
+            "correct": false
+        },
+        {
+            "text": "เพื่อป้องกันการแพร่กระจายของรังสีไอออนจากการใช้งานวัตถุรังสี",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "หลักการ SWIM ย่อมาจากอะไร?",
+        "answers": [
+        {
+            "text": "Stop, Warn, Inform, Manage",
+            "correct": true
+        },
+        {
+            "text": "Safety, Warning, Incident, Management",
+            "correct": false
+        },
+        {
+            "text": "Secure, Watch, Investigate, Maintain",
+            "correct": false
+        },
+        {
+            "text": "Survey, Warn, Identify, Monitor",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตาม '5 Steps to Safety and SWIM Program' หากพนักงานตอบว่า “ไม่” ในขั้นตอนใดขั้นตอนหนึ่งของ 5 Steps to Safety ควรทำอย่างไร?",
+        "answers": [
+        {
+            "text": "ต้องหยุดงานทันทีและปฏิบัติตามหลัก SWIM",
+            "correct": true
+        },
+        {
+            "text": "แจ้งหัวหน้างานและดำเนินการต่อ",
+            "correct": false
+        },
+        {
+            "text": "ประเมินสถานการณ์ด้วยตนเองและแก้ไข",
+            "correct": false
+        },
+        {
+            "text": "รอการตรวจสอบประจำสัปดาห์จาก Safety captain",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ในกรณีที่พบเหตุการณ์สารเคมีรั่วไหลรุนแรงและไม่สามารถระงับเหตุขั้นต้นได้ ผู้อำนวยการฉุกเฉินจะสั่งการอย่างไร?",
+        "answers": [
+        {
+            "text": "สั่งใช้แผนตอบโต้สถานการณ์สารเคมีรั่วไหลรุนแรง",
+            "correct": true
+        },
+        {
+            "text": "กรอกแบบฟอร์ม FOPI--EHS--001-00 Mishap Report",
+            "correct": false
+        },
+        {
+            "text": "แจ้ง MCM/ประธาน",
+            "correct": false
+        },
+        {
+            "text": "ประสานงานแจ้ง บ.PV",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ข้อใดต่อไปนี้ไม่ใช่คุณสมบัติที่ถูกต้องของ 'Hazardous materials' (วัตถุอันตราย) ตามเอกสาร 'Chemical Classification and Storage'?",
+        "answers": [
+        {
+            "text": "วัตถุอันตรายตามประกาศกระทรวงอุตสาหกรรม เรื่อง บัญชีรายชื่อวัตถุอันตราย",
+            "correct": false
+        },
+        {
+            "text": "สารเคมีที่ใช้เพื่อวัตถุประสงค์อื่นๆ เช่น งานสำนักงาน",
+            "correct": true
+        },
+        {
+            "text": "มีการจำแนกตามข้อกำหนดการขนส่งวัตถุอันตรายของสหประชาชาติ",
+            "correct": false
+        },
+        {
+            "text": "มีเลขรหัสประจำตัว 4 หลักที่กำหนดใน UN Model Regulations",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตามเอกสาร 'Radiation Ionizing' วัตถุประสงค์หลักของขั้นตอนปฏิบัตินี้คืออะไร?",
+        "answers": [
+        {
+            "text": "เพื่อป้องกันการแพร่กระจายของรังสีไอออน ซึ่งเป็นผลมาจากกิจกรรมการใช้งานวัตถุรังสี (Kr-85)",
+            "correct": true
+        },
+        {
+            "text": "เพื่อกำหนดแนวทางการจัดการและการขนส่งวัตถุอันตรายทางบก",
+            "correct": false
+        },
+        {
+            "text": "เพื่อระบุและประเมินอันตรายของสารเคมีที่ใช้ในโรงงาน",
+            "correct": false
+        },
+        {
+            "text": "เพื่อกำหนดมาตรการความปลอดภัยสำหรับเครื่องจักรที่ใช้ในกระบวนการผลิต",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ใครมีหน้าที่ 'บริหารจัดการด้านความปลอดภัย ทบทวนแผน มาตรการป้องกันอันตรายจากรังสี และแนะนำผู้บริหารและผู้ปฏิบัติงานเกี่ยวกับการใช้สารกัมมันตรังสี' ตามเอกสาร 'Radiation Ionizing'?",
+        "answers": [
+        {
+            "text": "เจ้าหน้าที่ความปลอดภัยทางรังสี (RSO)",
+            "correct": true
+        },
+        {
+            "text": "ผู้บริหารระดับสูงสุดของโรงงาน",
+            "correct": false
+        },
+        {
+            "text": "ผู้จัดการแผนก และหัวหน้าแผนก",
+            "correct": false
+        },
+        {
+            "text": "พนักงาน DSST ทุกคน",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตามเอกสาร 'การป้องกันอันตรายจากวัสดุกัมมันตรังสี' วัสดุกัมมันตรังสีที่ใช้ภายในบริษัทได้รับการอนุญาตจากหน่วยงานใด?",
+        "answers": [
+        {
+            "text": "สำนักงานปรมาณูเพื่อสันติ",
+            "correct": true
+        },
+        {
+            "text": "กรมโรงงานอุตสาหกรรม",
+            "correct": false
+        },
+        {
+            "text": "กระทรวงกลาโหม",
+            "correct": false
+        },
+        {
+            "text": "กรมสวัสดิการและคุ้มครองแรงงาน",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ผู้ปฏิบัติงานเกี่ยวกับวัสดุกัมมันตรังสีต้องสวมใส่อุปกรณ์ป้องกันใดและพกพาอะไรตลอดเวลาที่ปฏิบัติงานในพื้นที่ที่กำหนด?",
+        "answers": [
+        {
+            "text": "ต้องสวมใส่ PPE ตามกำหนดและต้องคิดเครื่องบันทึกรังสี (OSL) อยู่ตลอดเวลา",
+            "correct": true
+        },
+        {
+            "text": "ต้องสวมหมวกนิรภัยแบบแข็งและแว่นตาป้องกัน",
+            "correct": false
+        },
+        {
+            "text": "ต้องสวมชุดยูนิฟอร์มที่ทำจากคอตตอนและรองเท้านิรภัย",
+            "correct": false
+        },
+        {
+            "text": "ต้องสวมถุงมือไนไตรชนิดหนาและเสื้อคลุมกันรังสี",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตาม 'Safety Common Rules' กฎพื้นฐานข้อแรกคืออะไร?",
+        "answers": [
+        {
+            "text": "เดิน อย่าวิ่ง",
+            "correct": true
+        },
+        {
+            "text": "ห้ามพนักงานหยอกล้อเล่นกันระหว่างทำงาน",
+            "correct": false
+        },
+        {
+            "text": "ห้ามพนักงานเดินล้วงกระเป๋าในพื้นที่กระบวนการผลิต",
+            "correct": false
+        },
+        {
+            "text": "ไม่อนุญาตให้บุคคลอายุต่ำกว่า 15 ปีเข้ามาในโรงงาน",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "หากพบสิ่งผิดปกติในที่ทำงาน ควรปฏิบัติตามหลักการใดตาม 'Safety Common Rules'?",
+        "answers": [
+        {
+            "text": "ใช้หลัก SWIM",
+            "correct": true
+        },
+        {
+            "text": "รายงานผู้บังคับบัญชาทันที",
+            "correct": false
+        },
+        {
+            "text": "ตรวจสอบสภาพสายไฟและอุปกรณ์",
+            "correct": false
+        },
+        {
+            "text": "ห้ามทำงานถ้ามองไม่เห็น",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตาม 'Safety Common Rules' พนักงาน 1 คนได้รับอนุญาตให้ยก ลาก ผลัก ดัน แบก หาม วัตถุหรือสิ่งของด้วยมือเปล่าได้ไม่เกินกี่กิโลกรัม?",
+        "answers": [
+        {
+            "text": "20 กิโลกรัม",
+            "correct": true
+        },
+        {
+            "text": "10 กิโลกรัม (สำหรับพนักงานตั้งครรภ์)",
+            "correct": false
+        },
+        {
+            "text": "45 กิโลกรัม",
+            "correct": false
+        },
+        {
+            "text": "500 กิโลกรัม",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตาม 'Safety Common Rules' วัตถุระเบิดไม่ควรเก็บสัมผัสกับแสงอาทิตย์เพราะเหตุใด?",
+        "answers": [
+        {
+            "text": "ทำให้เสื่อมคุณภาพเร็วขึ้นและอาจทำให้บางจุดมีอุณหภูมิสูงขึ้นและลุกติดไฟได้",
+            "correct": true
+        },
+        {
+            "text": "เพื่อป้องกันการสื่อสารที่ผิดพลาด",
+            "correct": false
+        },
+        {
+            "text": "เพื่อป้องกันไฟฟ้าสถิตย์",
+            "correct": false
+        },
+        {
+            "text": "เนื่องจากวัตถุระเบิดสามารถเกิดการจุดระเบิดด้วยไฟฟ้าสถิตย์",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตาม 'Sock Filter Waste Transportation' ใครมีหน้าที่รับผิดชอบในการรัดภาชนะบรรจุของเสียให้แน่นหนาและขนส่งของเสียอย่างปลอดภัย?",
+        "answers": [
+        {
+            "text": "บริษัทรับกำจัด/บำบัด (Progesser company)",
+            "correct": true
+        },
+        {
+            "text": "เจ้าหน้าที่สิ่งแวดล้อม",
+            "correct": false
+        },
+        {
+            "text": "ผู้ปฏิบัติงานขับรถโฟล์คลิฟท์",
+            "correct": false
+        },
+        {
+            "text": "DSST-SB",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตามเอกสาร 'Sock Filter Waste Transportation' ผู้ปฏิบัติงานขับรถโฟล์คลิฟท์ต้องสวมใส่อุปกรณ์ป้องกันอันตรายส่วนบุคคลใดบ้าง?",
+        "answers": [
+        {
+            "text": "แว่นตาป้องกัน (Safety glass), หมวกนิรภัยแบบแข็ง (Helmet), รองเท้านิรภัย (Safety shoes)",
+            "correct": true
+        },
+        {
+            "text": "แว่นตาป้องกัน (Safety glass) เท่านั้น",
+            "correct": false
+        },
+        {
+            "text": "หมวกนิรภัยแบบแข็ง (Helmet) เท่านั้น",
+            "correct": false
+        },
+        {
+            "text": "รองเท้านิรภัย (Safety shoes) เท่านั้น",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "เหตุผลหลักในการใช้หลัก 5 Steps to Safety และ SWIM program คืออะไร?",
+        "answers": [
+        {
+            "text": "เพื่อเพิ่มประสิทธิภาพในการตัดสินใจและป้องกันอุบัติเหตุในสถานการณ์ที่ไม่ปกติ",
+            "correct": true
+        },
+        {
+            "text": "เพื่อควบคุมการจัดซื้อและจัดเก็บสารเคมีให้เป็นไปตามกฎหมาย",
+            "correct": false
+        },
+        {
+            "text": "เพื่อตรวจสอบการรั่วไหลของสารกัมมันตรังสี",
+            "correct": false
+        },
+        {
+            "text": "เพื่อจัดทำรายงานอุบัติเหตุและเหตุการณ์เกือบเกิดอุบัติเหตุ",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ในกรณีเกิดเพลิงไหม้จากสารเคมี ควรปฏิบัติตามแนวทางใดตามที่ระบุในเอกสาร 'Chemical Control'?",
+        "answers": [
+        {
+            "text": "ปฏิบัติตามระเบียบปฏิบัติแผนจัดการตอบโต้เหตุฉุกเฉิน (OPI-I08-EHS-008)",
+            "correct": true
+        },
+        {
+            "text": "ทำความสะอาดพื้นที่โดยทันที",
+            "correct": false
+        },
+        {
+            "text": "แจ้งหัวหน้างานและดำเนินการต่อ",
+            "correct": false
+        },
+        {
+            "text": "อพยพออกจากพื้นที่โดยทันที",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "สารกัมมันตรังสีใดที่ใช้ในการตรวจสอบหารอยรั่วจากการเชื่อมของชิ้นงาน (Leakage test) ตามข้อมูลในเอกสาร 'การป้องกันอันตรายจากวัสดุกัมมันตรังสี'?",
+        "answers": [
+        {
+            "text": "Krypton-85 (Unsealed source)",
+            "correct": true
+        },
+        {
+            "text": "Cesium-137",
+            "correct": false
+        },
+        {
+            "text": "Krypton-85 (Sealed source)",
+            "correct": false
+        },
+        {
+            "text": "ZPP Powder",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตาม 'Safety Common Rules' ผู้ขับขี่รถจักรยานยนต์และผู้โดยสารต้องสวมหมวกนิรภัยและทำอะไรเพิ่มเติม?",
+        "answers": [
+        {
+            "text": "สวมหมวกนิรภัย (หมวกกันน็อค) พร้อมรัดคางให้แน่นกระชับ",
+            "correct": true
+        },
+        {
+            "text": "คาดเข็มขัดนิรภัย",
+            "correct": false
+        },
+        {
+            "text": "ขับรถไม่เกิน 10 กิโลเมตรต่อชั่วโมง",
+            "correct": false
+        },
+        {
+            "text": "ให้สัญญาณไฟล่วงหน้าอย่างน้อย 10 เมตร",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "วัตถุประสงค์ของการจัดการการเปลี่ยนแปลง (Management of Change - MOC) ตามเอกสาร 'Chemical Control' คืออะไร?",
+        "answers": [
+        {
+            "text": "เพื่อให้แน่ใจว่าการเปลี่ยนแปลงใดๆ ในกระบวนการ, การทดลอง, วัตถุดิบ, ขั้นตอนการปฏิบัติงาน, สารเคมี, เทคโนโลยี, อุปกรณ์และอาคารสถานที่มีการบันทึกตาม OPI-I08-EHS-011",
+            "correct": true
+        },
+        {
+            "text": "เพื่อกำหนดระเบียบปฏิบัติงานมาตรฐานในการควบคุมการสั่งซื้อสารเคมี",
+            "correct": false
+        },
+        {
+            "text": "เพื่อป้องกันการแพร่กระจายของรังสีไอออนจากการใช้งานวัตถุรังสี",
+            "correct": false
+        },
+        {
+            "text": "เพื่อประเมินความปลอดภัยของสารเคมีก่อนที่จะทำการสั่งซื้อ",
+            "correct": false
+        }
+        ]
+    },
+    {
+        "question": "ตาม 'Safety Common Rules' กรณีมีการเคลื่อนย้ายวัตถุที่มีพลังงานสูง พนักงานที่กำลังถือวัตถุนั้นจะต้องตะโกนคำว่าอะไรเพื่อเตือนผู้อื่นและเคลียร์เส้นทาง?",
+        "answers": [
+        {
+            "text": "พาวเดอร์",
+            "correct": true
+        },
+        {
+            "text": "อันตราย",
+            "correct": false
+        },
+        {
+            "text": "ระเบิด",
+            "correct": false
+        },
+        {
+            "text": "ระวัง",
+            "correct": false
+        }
+        ]
+    }
+            ];
+            
+            // UI Elements
+            // ตัวแปร UI Elements ที่ใช้บ่อย จะถูกประกาศด้านบนสุดของ IIFE
+            // เพื่อให้แน่ใจว่าสามารถเข้าถึงได้จากทุกฟังก์ชันภายใน IIFE
+            const startScreen = document.getElementById('start-screen');
+            const questionTextElement = document.getElementById('question-text');
+            const answerButtonsElement = document.getElementById('answer-buttons');
+            const scoreDisplayElement = document.getElementById('score-display');
+            const feedbackElement = document.getElementById('feedback');
+            const startGameButton = document.getElementById('start-game-button');
+            const restartButtonFinal = document.getElementById('restart-button-final');
+            const gameActiveArea = document.getElementById('game-active-area');
+            const resultArea = document.getElementById('result-area');
+            const finalScoreElement = document.getElementById('final-score');
+            const resultMessageElement = document.getElementById('result-message');
+            const questionNumberElement = document.getElementById('question-number');
+            const messageBox = document.getElementById('message-box');
+            const messageText = document.getElementById('message-text');
+            const loadingOverlay = document.getElementById('loading-overlay');
+            const highScoreDisplay = document.getElementById('high-score-display');
+            const timerBar = document.getElementById('timer-bar');
+            const timerTextElement = document.getElementById('timer-text');
 
-        // Fisher-Yates shuffle algorithm
-        function shuffleArray(array) {
-            for (let i = array.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [array[i], array[j]] = [array[j], array[i]];
+            // Function to show a custom message box (no change)
+            function showMessage(msg) {
+                messageText.textContent = msg;
+                messageBox.style.display = 'block';
             }
-        }
 
-        // Exponential backoff for API calls (kept for Firestore)
-        async function fetchWithExponentialBackoff(func, ...args) {
-            let delay = 1000; // 1 second
-            const maxRetries = 5;
-            for (let i = 0; i < maxRetries; i++) {
-                try {
-                    return await func(...args);
-                } catch (error) {
-                    console.warn(`Retry ${i + 1}/${maxRetries} for function ${func.name}:`, error);
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    delay *= 2; // Double the delay
+            // Function to hide the custom message box (no change)
+            window.hideMessage = function() {
+                messageBox.style.display = 'none';
+            }
+
+            // Show/Hide loading overlay (now only for initial setup, not Firebase)
+            function showLoading(text = 'กำลังโหลดข้อมูล...') {
+                loadingOverlay.querySelector('div').textContent = text;
+                loadingOverlay.style.display = 'flex';
+            }
+
+            function hideLoading() {
+                loadingOverlay.style.display = 'none';
+            }
+
+            // Fisher-Yates shuffle algorithm (no change)
+            function shuffleArray(array) {
+                for (let i = array.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [array[i], array[j]] = [array[j], array[i]];
                 }
             }
-            throw new Error('Max retries exceeded for API call');
-        }
-
-        // Initialize Firebase and Authenticate User
-        async function initFirebaseAndAuth() {
-            showLoading('กำลังเชื่อมต่อฐานข้อมูล...');
-            try {
-                // Check if firebaseConfig and projectId are properly provided
-                if (!firebaseConfig || !firebaseConfig.projectId || firebaseConfig.projectId === "YOUR_PROJECT_ID") {
-                    throw new Error("Firebase configuration error: 'projectId' not provided or is still a placeholder. โปรดใส่ Firebase Config ของคุณเองในโค้ด");
+            
+            // Update Highest Score (now only for current session)
+            async function updateHighestScore(newScore) {
+                if (newScore > highestScore) {
+                    highestScore = newScore;
+                    displayScoresAndPlays();
                 }
-
-                app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-
-                // Listen for auth state changes
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        userIdDisplay.textContent = `User ID: ${userId}`;
-                        isAuthReady = true;
-                        await fetchUserData(); // Fetch user data once authenticated
-                    } else {
-                        // Sign in anonymously if no initial token or user signs out
-                        if (initialAuthToken) {
-                            await signInWithCustomToken(auth, initialAuthToken);
-                        } else {
-                            // Fallback to anonymous sign-in if no initial token
-                            await signInAnonymously(auth);
-                        }
-                    }
-                    hideLoading();
-                });
-            } catch (error) {
-                console.error("Error initializing Firebase or signing in:", error);
-                showMessage("เกิดข้อผิดพลาดในการเชื่อมต่อ: " + error.message + " กรุณาตรวจสอบการตั้งค่า Firebase.");
-                hideLoading();
-                // Optionally disable start button if Firebase fails to initialize
-                startGameButton.disabled = true;
             }
-        }
 
-        // Fetch User Data (High Score) from Firestore
-        async function fetchUserData() {
-            if (!isAuthReady) return;
-
-            showLoading('กำลังดึงข้อมูลผู้ใช้...');
-            try {
-                // Fetch High Score
-                const userHighScoreDocRef = doc(db, `artifacts/${appId}/users/${userId}/quiz_scores`, `high_score`);
-                const highScoreDocSnap = await fetchWithExponentialBackoff(getDoc, userHighScoreDocRef);
-                if (highScoreDocSnap.exists()) {
-                    highestScore = highScoreDocSnap.data().highestScore || 0;
-                } else {
-                    // Create if not exists
-                    await fetchWithExponentialBackoff(setDoc, userHighScoreDocRef, { highestScore: 0 });
-                    highestScore = 0;
-                }
-
-                displayScoresAndPlays();
-            } catch (error) {
-                console.error("Error fetching user data from Firestore:", error);
-                showMessage("เกิดข้อผิดพลาดในการดึงข้อมูลผู้ใช้: " + error.message);
-            } finally {
-                hideLoading();
+            // Update UI with scores (no play count)
+            function displayScoresAndPlays() {
+                highScoreDisplay.textContent = highestScore;
             }
-        }
 
-        // Update High Score in Firestore
-        async function updateHighestScore(newScore) {
-            if (!isAuthReady) return;
-            if (newScore <= highestScore) return; // Only update if new score is higher
-
-            showLoading('กำลังบันทึกคะแนนสูงสุด...');
-            try {
-                const userHighScoreDocRef = doc(db, `artifacts/${appId}/users/${userId}/quiz_scores`, `high_score`);
-                await fetchWithExponentialBackoff(updateDoc, userHighScoreDocRef, { highestScore: newScore });
-                highestScore = newScore;
-                displayScoresAndPlays();
-            } catch (error) {
-                console.error("Error updating highest score:", error);
-                showMessage("เกิดข้อผิดพลาดในการบันทึกคะแนนสูงสุด: " + error.message);
-            } finally {
-                hideLoading();
-            }
-        }
-
-        // Update UI with scores (removed play count)
-        function displayScoresAndPlays() {
-            highScoreDisplay.textContent = highestScore;
-        }
-
-        // Timer functions
-        function startTimer() {
-            clearInterval(timer); // Clear any existing timer
-            timeLeft = timePerQuestion;
-            timerTextElement.textContent = `เวลา: ${timeLeft} วินาที`;
-            timerBar.style.width = '100%';
-            timerBar.style.backgroundColor = '#8bc34a'; /* Green */
-
-            timer = setInterval(() => {
-                timeLeft--;
+            // Timer functions (no change)
+            function startTimer() {
+                clearInterval(timer);
+                timeLeft = timePerQuestion;
                 timerTextElement.textContent = `เวลา: ${timeLeft} วินาที`;
-                const percentage = (timeLeft / timePerQuestion) * 100;
-                timerBar.style.width = `${percentage}%`;
+                timerBar.style.width = '100%';
+                timerBar.style.backgroundColor = '#8bc34a';
 
-                if (percentage <= 25) { // Change color to red when low
-                    timerBar.style.backgroundColor = '#ffadad';
-                } else if (percentage <= 50) { // Change color to orange when half
-                    timerBar.style.backgroundColor = '#ffcc80';
-                }
+                timer = setInterval(() => {
+                    timeLeft--;
+                    timerTextElement.textContent = `เวลา: ${timeLeft} วินาที`;
+                    const percentage = (timeLeft / timePerQuestion) * 100;
+                    timerBar.style.width = `${percentage}%`;
 
-                if (timeLeft <= 0) {
-                    clearInterval(timer);
-                    endQuizDueToTimeOut();
-                }
-            }, 1000);
-        }
-
-        function stopTimer() {
-            clearInterval(timer);
-        }
-
-        function endQuizDueToTimeOut() {
-            quizEndedByTimeOut = true; // Set flag
-            // Disable all answer buttons
-            Array.from(answerButtonsElement.children).forEach(button => {
-                button.removeEventListener('click', selectAnswer);
-                button.disabled = true;
-                button.classList.add('incorrect'); // Visually mark as unanswered
-            });
-
-            feedbackElement.style.display = 'block';
-            feedbackElement.textContent = 'หมดเวลา! 🙁';
-            feedbackElement.classList.add('incorrect');
-
-            // Move to next question or show result after a short delay
-            currentQuestionIndex++;
-            setTimeout(() => {
-                setNextQuestion();
-            }, 1000);
-        }
-
-        // Function to start the quiz
-        async function startQuiz() {
-            // Hide start screen, show game active area
-            startScreen.style.display = 'none';
-            gameActiveArea.style.display = 'block';
-
-            score = 0;
-            currentQuestionIndex = 0;
-            quizEndedByTimeOut = false; // Reset timeout flag for new game
-            resultArea.style.display = 'none'; // Ensure result area is hidden
-            feedbackElement.style.display = 'none';
-            scoreDisplayElement.textContent = `คะแนน: 0 / 0`;
-
-            // Select 10 random questions for this round from the hardcoded array
-            shuffleArray(allQuizQuestions);
-            currentQuestions = allQuizQuestions.slice(0, totalQuestionsPerRound);
-
-            setNextQuestion();
-        }
-
-        // Function to display the next question
-        function setNextQuestion() {
-            resetState(); // Reset UI for new question
-            if (currentQuestionIndex < totalQuestionsPerRound) {
-                const question = currentQuestions[currentQuestionIndex];
-                
-                // Shuffle the answers for the current question before displaying
-                shuffleArray(question.answers); 
-
-                questionNumberElement.textContent = `คำถามที่ ${currentQuestionIndex + 1} / ${totalQuestionsPerRound}`;
-                questionTextElement.textContent = question.question;
-
-                // Display answer buttons
-                question.answers.forEach((answer, index) => {
-                    const button = document.createElement('button');
-                    // Changed to Thai alphabet for options A, B, C, D
-                    const thaiAlphabet = ['ก', 'ข', 'ค', 'ง', 'จ', 'ฉ', 'ช', 'ซ']; // Extend if more than 4 options are possible
-                    button.textContent = `${thaiAlphabet[index]}. ${answer.text}`; 
-                    button.classList.add('answer-button');
-                    if (answer.correct) {
-                        button.dataset.correct = true;
+                    if (percentage <= 25) {
+                        timerBar.style.backgroundColor = '#ffadad';
+                    } else if (percentage <= 50) {
+                        timerBar.style.backgroundColor = '#ffcc80';
                     }
-                    button.addEventListener('click', selectAnswer);
-                    answerButtonsElement.appendChild(button);
-                });
-                startTimer(); // Start timer for the new question
-            } else {
-                showResult(); // End of quiz
+
+                    if (timeLeft <= 0) {
+                        clearInterval(timer);
+                        endQuizDueToTimeOut();
+                    }
+                }, 1000);
             }
-        }
 
-        // Function to reset the UI state
-        function resetState() {
-            stopTimer(); // Ensure timer is stopped when resetting state
-            feedbackElement.style.display = 'none';
-            feedbackElement.classList.remove('correct', 'incorrect');
-            while (answerButtonsElement.firstChild) {
-                answerButtonsElement.removeChild(answerButtonsElement.firstChild);
+            function stopTimer() {
+                clearInterval(timer);
             }
-        }
 
-        // Function to handle answer selection
-        async function selectAnswer(e) {
-            stopTimer(); // Stop timer immediately on answer selection
-            const selectedButton = e.target;
-            const isCorrect = selectedButton.dataset.correct === 'true';
-
-            // Show feedback
-            feedbackElement.style.display = 'block';
-            if (isCorrect) {
-                feedbackElement.textContent = 'ถูกต้อง! 🎉';
-                feedbackElement.classList.add('correct');
-                score++;
-            } else {
-                feedbackElement.textContent = 'ผิด! 🙁';
-                feedbackElement.classList.add('incorrect');
-            }
-            scoreDisplayElement.textContent = `คะแนน: ${score} / ${currentQuestionIndex + 1}`;
-
-            // Disable all buttons and highlight correct/incorrect
-            Array.from(answerButtonsElement.children).forEach(button => {
-                if (button.dataset.correct === 'true') {
-                    button.classList.add('correct');
-                } else {
+            function endQuizDueToTimeOut() {
+                quizEndedByTimeOut = true;
+                Array.from(answerButtonsElement.children).forEach(button => {
+                    button.removeEventListener('click', selectAnswer);
+                    button.disabled = true;
                     button.classList.add('incorrect');
-                }
-                button.removeEventListener('click', selectAnswer); // Prevent multiple clicks
-                button.disabled = true; // Disable all buttons
-            });
+                });
 
-            currentQuestionIndex++;
-            // Move to next question after a short delay
-            setTimeout(() => {
-                setNextQuestion();
-            }, 1500); // 1.5-second delay to show feedback
-        }
+                feedbackElement.style.display = 'block';
+                feedbackElement.textContent = 'หมดเวลา! 🙁';
+                feedbackElement.classList.add('incorrect');
 
-        // Function to show final results
-        async function showResult() {
-            stopTimer(); // Ensure timer is stopped
-            gameActiveArea.style.display = 'none';
-            resultArea.style.display = 'block';
-            finalScoreElement.textContent = score;
-
-            let message = '';
-            if (quizEndedByTimeOut) {
-                 message = "หมดเวลา! พยายามเข้านะคะสู้ๆค่ะ 😊";
-            } else if (score === totalQuestionsPerRound) {
-                message = "ยินดีด้วยคุณเก่งมากๆ กรุณาแคปหน้าจอไว้เพื่อรับรางวัลที่แผนกเซฟตี้ 🏆";
-            } else {
-                message = "พยายามเข้านะคะสู้ๆค่ะ 😊";
+                currentQuestionIndex++;
+                setTimeout(() => {
+                    setNextQuestion();
+                }, 1000);
             }
-            resultMessageElement.textContent = message;
 
-            await updateHighestScore(score); // Update highest score if current score is higher
-            displayScoresAndPlays(); // Update play count display
+            // Function to start the quiz (simplified)
+            async function startQuiz() {
+                startScreen.style.display = 'none';
+                gameActiveArea.style.display = 'block';
 
-            restartButtonFinal.style.display = 'block'; // Always allow restart
-        }
+                score = 0;
+                currentQuestionIndex = 0;
+                quizEndedByTimeOut = false;
+                resultArea.style.display = 'none';
+                feedbackElement.style.display = 'none';
+                scoreDisplayElement.textContent = `คะแนน: 0 / 0`;
 
-        // Event listeners
-        startGameButton.addEventListener('click', startQuiz); // Listener for the new start game button
-        restartButtonFinal.addEventListener('click', startQuiz);
+                shuffleArray(allQuizQuestions);
+                currentQuestions = allQuizQuestions.slice(0, totalQuestionsPerRound);
 
-        // On window load, initialize Firebase and show start screen
-        window.onload = async function() {
-            await initFirebaseAndAuth(); // Initialize Firebase and sign in
-            // After auth, show the start screen
-            startScreen.style.display = 'block';
-            gameActiveArea.style.display = 'none'; // Ensure game area is hidden initially
-            resultArea.style.display = 'none'; // Ensure result area is hidden initially
-            hideLoading();
-        };
+                setNextQuestion();
+            }
 
+            // Function to display the next question (no change)
+            function setNextQuestion() {
+                resetState();
+                if (currentQuestionIndex < totalQuestionsPerRound) {
+                    const question = currentQuestions[currentQuestionIndex];
+                    
+                    shuffleArray(question.answers); 
+
+                    questionNumberElement.textContent = `คำถามที่ ${currentQuestionIndex + 1} / ${totalQuestionsPerRound}`;
+                    questionTextElement.textContent = question.question;
+
+                    question.answers.forEach((answer, index) => {
+                        const button = document.createElement('button');
+                        const thaiAlphabet = ['ก', 'ข', 'ค', 'ง', 'จ', 'ฉ', 'ช', 'ซ']; 
+                        button.textContent = `${thaiAlphabet[index]}. ${answer.text}`; 
+                        button.classList.add('answer-button');
+                        if (answer.correct) {
+                            button.dataset.correct = true;
+                        }
+                        button.addEventListener('click', selectAnswer);
+                        answerButtonsElement.appendChild(button);
+                    });
+                    startTimer();
+                } else {
+                    showResult();
+                }
+            }
+
+            // Function to reset the UI state (no change)
+            function resetState() {
+                stopTimer();
+                feedbackElement.style.display = 'none';
+                feedbackElement.classList.remove('correct', 'incorrect');
+                while (answerButtonsElement.firstChild) {
+                    answerButtonsElement.removeChild(answerButtonsElement.firstChild);
+                }
+            }
+
+            // Function to handle answer selection (no change)
+            async function selectAnswer(e) {
+                stopTimer();
+                const selectedButton = e.target;
+                const isCorrect = selectedButton.dataset.correct === 'true';
+
+                feedbackElement.style.display = 'block';
+                if (isCorrect) {
+                    feedbackElement.textContent = 'ถูกต้อง! 🎉';
+                    feedbackElement.classList.add('correct');
+                    score++;
+                } else {
+                    feedbackElement.textContent = 'ผิด! 🙁';
+                    feedbackElement.classList.add('incorrect');
+                }
+                scoreDisplayElement.textContent = `คะแนน: ${score} / ${currentQuestionIndex + 1}`;
+
+                Array.from(answerButtonsElement.children).forEach(button => {
+                    if (button.dataset.correct === 'true') {
+                        button.classList.add('correct');
+                    } else {
+                        button.classList.add('incorrect');
+                    }
+                    button.removeEventListener('click', selectAnswer);
+                    button.disabled = true;
+                });
+
+                currentQuestionIndex++;
+                setTimeout(() => {
+                    setNextQuestion();
+                }, 1500);
+            }
+
+            // Function to show final results (simplified)
+            async function showResult() {
+                stopTimer();
+                gameActiveArea.style.display = 'none';
+                resultArea.style.display = 'block';
+                finalScoreElement.textContent = score;
+
+                let message = '';
+                if (quizEndedByTimeOut) {
+                    message = "หมดเวลา! พยายามเข้านะคะสู้ๆค่ะ 😊";
+                } else if (score === totalQuestionsPerRound) {
+                    message = "ยินดีด้วยคุณเก่งมากๆ กรุณาแคปหน้าจอไว้เพื่อรับรางวัลที่แผนกเซฟตี้ 🏆";
+                } else {
+                    message = "พยายามเข้านะคะสู้ๆค่ะ 😊";
+                }
+                resultMessageElement.textContent = message;
+
+                await updateHighestScore(score); // Update highest score for current session
+                displayScoresAndPlays(); 
+
+                restartButtonFinal.style.display = 'block';
+            }
+
+            // Event listeners (no change)
+            startGameButton.addEventListener('click', startQuiz);
+            restartButtonFinal.addEventListener('click', startQuiz);
+
+            // On window load (simplified)
+            window.onload = function() {
+                startScreen.style.display = 'block';
+                gameActiveArea.style.display = 'none';
+                resultArea.style.display = 'none';
+                hideLoading(); // Hide initial loading since Firebase is removed
+                displayScoresAndPlays(); // Initialize high score display (will be 0)
+            };
+        })(); // สิ้นสุด IIFE
     </script>
 </body>
 </html>
